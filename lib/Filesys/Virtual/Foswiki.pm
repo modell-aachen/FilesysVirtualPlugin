@@ -57,8 +57,9 @@ use Foswiki::Func ();       # for API
 use Foswiki::Meta ();       # _ONLY_ to get the comment for an attachment :(
 
 our $VERSION = '$Rev: 1208 $';
-our $RELEASE = '1.6.1-/jidQrcaozxnxTDSHEh3qA';
-our $FILES_EXT = '_files';
+our $RELEASE = '1.6.2-/jidQrcaozxnxTDSHEh3qA';
+#our $FILES_EXT = '_files';
+our $FILES_EXT = '';
 our @views;
 our $extensionsRE;
 
@@ -100,7 +101,8 @@ sub new {
     unless (scalar(@views)) {
         my @v = split(/\s*,\s*/,
                       $Foswiki::cfg{Plugins}{FilesysVirtualPlugin}{Views}
-                        || 'txt' );
+                        || '' ); # meyer: wenn kein View angebenen, dann verstecke alle View-Files
+#                        || 'txt' );
         foreach my $view (@v) {
             my $vc = 'Foswiki::Plugins::FilesysVirtualPlugin::Views::'
               .$view;

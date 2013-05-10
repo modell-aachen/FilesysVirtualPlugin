@@ -2,28 +2,26 @@
 package Foswiki::Plugins::FilesysVirtualPlugin::Views::txt;
 
 use strict;
-use IO::String ();
+use IO::String    ();
 use Foswiki::Func ();
 
-our $VERSION = '$Rev: 1208 $';
-our $RELEASE = '1.6.1-/jidQrcaozxnxTDSHEh3qA';
+our $VERSION = '1.6.1';
+our $RELEASE = '%$TRACKINGCODE%';
 
-sub extension { '.txt' };
+sub extension { '.txt' }
 
 sub read {
-    my ($this, $web, $topic) = @_;
+    my ( $this, $web, $topic ) = @_;
 
-    my ($meta, $text) = Foswiki::Func::readTopic($web, $topic);
+    my ( $meta, $text ) = Foswiki::Func::readTopic( $web, $topic );
     return IO::String->new($text);
 }
 
 sub write {
-    my ($this, $web, $topic, $text) = @_;
+    my ( $this, $web, $topic, $text ) = @_;
 
-    my ($meta, $dummy) = Foswiki::Func::readTopic($web, $topic);
-    eval {
-        Foswiki::Func::saveTopic( $web, $topic, undef, $text, $meta );
-    };
+    my ( $meta, $dummy ) = Foswiki::Func::readTopic( $web, $topic );
+    eval { Foswiki::Func::saveTopic( $web, $topic, $meta, $text ); };
     return $@;
 }
 

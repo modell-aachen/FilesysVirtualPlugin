@@ -2,7 +2,8 @@
 #
 # Virtual file system layered over a Foswiki data store.
 # As far as possible this interface only uses the published methods of
-# Foswiki::Func.
+# Foswiki::Func. However the current implementation *assumes* an RCS-type
+# physical filestore.
 #
 # The Filesys::Virtual::Plain interface is extended with FUSE-compliant
 # methods for handling extended attributes.
@@ -10,31 +11,23 @@
 # Return values are based on the return values from Filesys::Virtual::Plain
 # with enhancements (much better use of $!)
 #
-# Note that there's a fundamental problem when working with a Foswiki
-# attachment store from Filesys::Virtual. A traditional filesystem means
-# a file can be created with almost any name, and once created that file
-# will be listed, and opened, and all the usual things you do with a file.
-# Thanks to the TWiki heritage, Foswiki doesn't work that way. It renames
-# files during upload, ostensibly for security reasons. Worse, it renames
-# them using an asymmetric encoding, so the original filename can't be
-# deduced from the renamed form.
+# Note that files uploaded through the Foswiki 'upload' script may not
+# have the original name of the uploaded file. This is due to the name
+# 'sanitization' applied by the 'upload' script. This module does not,
+# however, limit the characters used in filenames.
 #
-# There is an element of compromise here; a file that has been uploaded
-# in Foswiki is named according to the TWiki rules, but a file created using
-# this module gets a name according to a proper symmetrical encoding. For
-# example, if you upload "a b.gif" in Foswiki, it will be renamed "a_b.gif".
-# If you create the same file via Filesys::Virtual, it will create a Foswiki
-# attachment named "au20xb.gif" (where u20x is the encoding for a space
-# character).
+# A note on character set encodings. It is assumed that all filenames etc
+# passed to the API are encoded using perl logical characters i.e. they are
+# unicode strings of (potentially) wide-byte characters. Thus when Foswiki
+# is called to deal with these names, they must first be encoded in the
+# {Site}{CharSet}. This is done as early as possible.
 #
-# If a file has previously been uploaded in Foswiki with a name that includes
-# a character that might be encoded - for example, "a_b.gif" would be
-# encoded as "au5fxb.gif" in Filesys::Virtual, and that file is read, then
-# this module will make best efforts to map to (and maintain) the existing
-# filename.
-#
+# Two external databases (besides the Foswiki system) are used; an extended
+# attributes database, implemented using Storable, and a lock database,
+# implemented in Filesys::Virtual::Locks.
 
 package Filesys::Virtual::Foswiki;
+
 # Base class not strictly needed
 use Filesys::Virtual ();
 our @ISA = ('Filesys::Virtual');
@@ -43,24 +36,25 @@ use strict;
 
 use File::Path ();
 use POSIX ':errno_h';
-use Encode ();
+use Encode                  ();
 use Filesys::Virtual::Locks ();
-use IO::String ();
-use IO::File ();
-use Storable ();
+use IO::String              ();
+use IO::File                ();
+use Storable                ();
 
 # This uses the first occurence of these modules on the path, so the path
 # has to have been set up before we get here
-use Foswiki ();             # for constructor
+use Foswiki          ();    # for constructor
 use Foswiki::Plugins ();    # for $SESSION - namespace for compatibility
-use Foswiki::Func ();       # for API
-use Foswiki::Meta ();       # _ONLY_ to get the comment for an attachment :(
+use Foswiki::Func    ();    # for API
+use Foswiki::Meta    ();    # _ONLY_ to get the comment for an attachment :(
 
-our $VERSION = '$Rev: 1208 $';
-our $RELEASE = '1.6.2-1';
+our $VERSION   = '1.6.2';
+our $RELEASE   = '%$TRACKINGCODE%';
 our $FILES_EXT = '_files';
 our @views;
 our $extensionsRE;
+our $excludeRE;
 
 =pod
 
@@ -97,18 +91,19 @@ sub new {
     my $class = shift;
     my $args  = shift;
 
-    unless (scalar(@views)) {
-        my @v = split(/\s*,\s*/,
-                      $Foswiki::cfg{Plugins}{FilesysVirtualPlugin}{Views}
-                        || 'txt' );
+    unless ( scalar(@views) ) {
+        my @v =
+          split( /\s*,\s*/,
+            $Foswiki::cfg{Plugins}{FilesysVirtualPlugin}{Views} || 'txt' );
         foreach my $view (@v) {
-            my $vc = 'Foswiki::Plugins::FilesysVirtualPlugin::Views::'
-              .$view;
+            my $vc = 'Foswiki::Plugins::FilesysVirtualPlugin::Views::' . $view;
             eval "require $vc" || die $@;
-            push(@views, $vc);
+            push( @views, $vc );
         }
 
-        $extensionsRE = join('|', ( $FILES_EXT, map { $_->extension() } @views ));
+        $extensionsRE =
+          join( '|', ( $FILES_EXT, map { $_->extension() } @views ) );
+        $excludeRE = $Foswiki::cfg{Plugins}{FilesysVirtualPlugin}{Exclude};
     }
 
     # root_path is the location
@@ -136,15 +131,16 @@ sub new {
 
 sub DESTROY {
     my $this = shift;
+
     # Clean up the Foswiki session
     $this->{session}->finish() if $this->{session};
 }
 
 sub _locks {
     my $this = shift;
-    unless ($this->{locks}) {
-        my $lockdb = Foswiki::Func::getWorkArea('FilesysVirtualPlugin')
-          . '/lockdb';
+    unless ( $this->{locks} ) {
+        my $lockdb =
+          Foswiki::Func::getWorkArea('FilesysVirtualPlugin') . '/lockdb';
         $this->{locks} = new Filesys::Virtual::Locks($lockdb);
     }
     return $this->{locks};
@@ -162,12 +158,26 @@ sub _initSession {
 
     # Initialise the session, if required
     $this->{session} = new Foswiki( undef, undef, { dav => 1 } );
-    if (!$this->{session} || !$Foswiki::Plugins::SESSION) {
+    if ( !$this->{session} || !$Foswiki::Plugins::SESSION ) {
         print STDERR "Failed to initialise Filesys::Virtual session; "
-          ." is the user authenticated?";
+          . " is the user authenticated?";
         return 0;
     }
     return $this->{session};
+}
+
+# Convert one or more strings from perl logical characters to the site encoding
+sub _logical2site {
+    return
+      map { Encode::encode( $Foswiki::cfg{Site}{CharSet} || 'iso-8859-1', $_ ) }
+      @_;
+}
+
+# Convert one or more strings from perl logical characters to the site encoding
+sub _site2logical {
+    return
+      map { Encode::decode( $Foswiki::cfg{Site}{CharSet} || 'iso-8859-1', $_ ) }
+      @_;
 }
 
 sub _readAttrs {
@@ -177,16 +187,18 @@ sub _readAttrs {
 
     $this->{attrs_db} ||= {};
 
-    my $f = Foswiki::Func::getWorkArea('FilesysVirtualPlugin').'/attrs.db';
-    if (-e $f) {
+    my $f = Foswiki::Func::getWorkArea('FilesysVirtualPlugin') . '/attrs.db';
+    if ( -e $f ) {
         eval {
+
             # Can't use retrieve of a file; doesn't work on Windows
             my $fd;
-            open($fd, '<', $f);
+            open( $fd, '<', $f );
             $this->{attrs_db} = Storable::fd_retrieve($fd);
             close($fd);
         };
         print STDERR "ERROR LOADING XATTRS DB: $@\n" if $@;
+
         # Ignore the error. There is no other sensible route
         # to reporting it.
     }
@@ -197,22 +209,23 @@ sub _readAttrs {
 sub _lockAttrs {
     my $this = shift;
 
-    my $f = Foswiki::Func::getWorkArea('FilesysVirtualPlugin').'/attrs.db';
-    if (-e $f) {
-        open($this->{adb_handle}, '<', $f);
-        flock($this->{adb_handle}, 1); # LOCK_SH
-        $this->{attrs_db} = Storable::fd_retrieve($this->{adb_handle});
+    my $f = Foswiki::Func::getWorkArea('FilesysVirtualPlugin') . '/attrs.db';
+    if ( -e $f ) {
+        open( $this->{adb_handle}, '<', $f );
+        flock( $this->{adb_handle}, 1 );    # LOCK_SH
+        $this->{attrs_db} = Storable::fd_retrieve( $this->{adb_handle} );
     }
+
     # (re)open and take an exclusive lock
-    open($this->{adb_handle}, '>', $f);
-    flock($this->{adb_handle}, 2); # LOCK_EX
+    open( $this->{adb_handle}, '>', $f );
+    flock( $this->{adb_handle}, 2 );        # LOCK_EX
 }
 
 sub _unlockAttrs {
     my $this = shift;
-    Storable::store_fd($this->{attrs_db}, $this->{adb_handle});
-    flock($this->{adb_handle}, 8); # LOCK_UN
-    close($this->{adb_handle});
+    Storable::store_fd( $this->{attrs_db}, $this->{adb_handle} );
+    flock( $this->{adb_handle}, 8 );        # LOCK_UN
+    close( $this->{adb_handle} );
     $this->{adb_handle} = undef;
 }
 
@@ -226,10 +239,11 @@ use this when you have some other way of authenticating users.
 =cut
 
 sub login {
-    my ( $this, $loginName, $loginPass ) = @_;
+    my $this = shift;
+    return 0 unless $this->_initSession();
+    my ( $loginName, $loginPass ) = _logical2site(@_);
 
     # SMELL: violations of core encapsulation
-    return 0 unless $this->_initSession();
     my $users = $Foswiki::Plugins::SESSION->{users};
     if ( $this->{validateLogin} ) {
         my $validation = $users->checkPassword( $loginName, $loginPass );
@@ -240,12 +254,22 @@ sub login {
 
     # Map the login name through the transformation rules
     # c.f. LdapContrib's RewriteWikiNames option
-    if ($Foswiki::cfg{Plugins}{FilesysVirtualPlugin}{RewriteLoginNames}) {
-	while (my ($pattern, $subst) = each %{$Foswiki::cfg{Plugins}{FilesysVirtualPlugin}{RewriteLoginNames}}) {
-	    # Does not validate the pattern nor the subst, so get them wrong at your own risk!
-	    eval "\$loginName =~ s#$pattern#$subst#g";
-	}
+    if ( $Foswiki::cfg{Plugins}{FilesysVirtualPlugin}{RewriteLoginNames} ) {
+        while ( my ( $pattern, $subst ) =
+            each
+            %{ $Foswiki::cfg{Plugins}{FilesysVirtualPlugin}{RewriteLoginNames} }
+          )
+        {
+
+            # Does not validate the pattern nor the subst, so get them wrong
+            # at your own risk!
+            eval "\$loginName =~ s#$pattern#$subst#g";
+        }
     }
+
+    # TODO: use Foswiki::Contrib::LdapContrib;
+    # $loginName = Foswiki::Contrib::LdapContrib::normalizeLoginName(
+    #      {}, $loginName);
 
     # Tell the login manager that the new user is logged in
     # Code copied from Foswiki::UI::Rest
@@ -270,6 +294,7 @@ sub login {
 # applied.
 sub _parseResource {
     my ( $this, $resource ) = @_;
+
     if ( defined $this->{location} && $resource =~ s/^$this->{location}// ) {
 
         # Absolute path; must be, cos it has a location
@@ -281,7 +306,8 @@ sub _parseResource {
     }
     $resource =~ s/\/\/+/\//g;    # normalise // -> /
     $resource =~ s/^\/+//;        # remove leading /
-                                  # Resolve the path into it's components
+
+    # Resolve the path into it's components
     my @path;
     foreach ( split( /\//, $resource ) ) {
         if ( $_ eq '..' ) {
@@ -307,42 +333,22 @@ sub _parseResource {
     }
     my @result = ($web);
     if ( scalar(@path) ) {
-        push( @result, shift(@path) );    # view
+        push( @result, shift(@path) );                     # view
         push( @result, shift(@path) ) if scalar(@path);    # attachment
         return undef if scalar(@path);
-    }
-    # Encode names for Foswiki
-    foreach (@result) {
-        $_ = _encode($_);
     }
 
     return \@result;
 }
 
-# Encode bad chars in foswiki names
-sub _encode {
-    my $s = shift;
-    return '' unless defined $s;
-    $s =~ s/u([\dA-Fa-f]+x)/u75x$1/g;
-    $s =~ s/($Foswiki::cfg{NameFilter})/sprintf('u%xx', ord($1))/ego;
-    $s =~ s#([^A-Za-z0-9_./])#sprintf('u%xx', ord($1))#eg;
-    return $s;
-}
-
-# Decode a Foswiki name for presentation
-sub _decode {
-    my $s = shift;
-    $s =~ s/u([\dA-Fa-f]+)x/chr(hex($1))/ge;
-    return $s;
-}
-
-# Many functions have to have six versions for different points in the
-# store hierarchy. This are indicated by the prefixes:
+# Because of different semantics at different levels in the Foswiki store
+# hierarchy, there may be up to five different versions of each function.
+# This are indicated by the prefixes:
 # _R_ - root (/)
 # _W_ - web
-# _V_ - topic (view)
+# _T_ - topic (view)
 # _D_ - topic (attachments dir)
-# _A_ - attachment
+# _A_ - attachment (attachment data file)
 # This function determines which level is applicable from the path, and
 # redirects to the appropriate version.
 sub _dispatch {
@@ -352,14 +358,17 @@ sub _dispatch {
 
     return 0 unless $this->_initSession();
     my $path = $this->_parseResource($resource);
+
+    # Note: all strings in \@path are encoded using {Site}{CharSet}
     unless ($path) {
         return $this->_fail( POSIX::EBADF, $resource );
     }
     my $view;
     if ( scalar(@$path) > 1 ) {
-        if ($path->[1] =~ s/$FILES_EXT//) {
+        if ( $path->[1] =~ s/$FILES_EXT// ) {
             $view = 'D';
-        } else {
+        }
+        else {
             foreach my $v (@views) {
                 my $e = $v->extension();
                 if ( $path->[1] =~ s/$e// ) {
@@ -368,7 +377,7 @@ sub _dispatch {
                 }
             }
         }
-        if (!$view) {
+        if ( !$view ) {
             die "Internal error - no topic view for $resource";
         }
     }
@@ -377,21 +386,23 @@ sub _dispatch {
         $type = 'A';
     }
     elsif ( $path->[1] ) {
-        if ($view eq 'D') {
+        if ( $view eq 'D' ) {
             $type = 'D';
-        } else {
+        }
+        else {
             $type = 'T';
         }
     }
     elsif ( $path->[0] ) {
-        $type = 'W';
+	$type = 'W'; # Web
     }
     $function = "_${type}_$function";
 
     #print STDERR "Call $function for $resource type $type ",join(',',@_),"\n";
-    if ($type eq 'T') {
+    if ( $type eq 'T' ) {
         return $this->$function( $view, @$path, @_ );
-    } else {
+    }
+    else {
         return $this->$function( @$path, @_ );
     }
 }
@@ -400,10 +411,12 @@ sub _dispatch {
 sub _hasAttachments {
     my ( $web, $topic ) = @_;
 
-    if (defined &Foswiki::Func::getAttachmentList) {
-        my @l = Foswiki::Func::getAttachmentList($web, $topic);
+    if ( defined &Foswiki::Func::getAttachmentList ) {
+        my @l = Foswiki::Func::getAttachmentList( $web, $topic );
         return scalar(@l) > 0;
-    } else {
+    }
+    else {
+
         # Probably TWiki. Have to viloate Store encapsulation
         return -d "$Foswiki::cfg{PubDir}/$web/$topic";
     }
@@ -413,13 +426,15 @@ sub _hasAttachments {
 sub _haveAccess {
     my ( $type, $web, $topic ) = @_;
     if ( !$web || $web eq '/' || !length($web) ) {
-        $type = "ROOT$type";
-        $web  = $topic;
+        $type  = "ROOT$type";
+        $web   = $topic;
         $topic = undef;
     }
-    return Foswiki::Func::checkAccessPermission( $type,
-        $Foswiki::Plugins::SESSION->{user},
-        undef, $topic, $web, undef );
+
+    # SMELL: Foswiki::Func::checkAccessPermission *does not work* on
+    # the root, so we have to use a lower-level interface (Foswiki::Meta)
+    my $meta = Foswiki::Meta->new( $Foswiki::Plugins::SESSION, $web, $topic );
+    return $meta->haveAccess( $type, $Foswiki::Plugins::SESSION->{user} );
 }
 
 sub _checkLock {
@@ -440,16 +455,23 @@ sub _checkName {
     if ($w) {
         foreach my $bit ( split( '/', $w ) ) {
             if ( defined &Foswiki::isValidWebName ) {
-                return 0 unless Foswiki::isValidWebName($bit);
-            } elsif ( $bit !~ m/^$Foswiki::regex{webNameRegex}$/o ) {
+
+                #return 0
+                die "ARSE $bit" unless Foswiki::isValidWebName($bit);
+            }
+            elsif ( $bit !~ m/^$Foswiki::regex{webNameRegex}$/o ) {
                 return 0;
             }
         }
     }
     return 1 unless defined $t;
-    if (defined &Foswiki::isValidTopicName) {
-        return 0 unless Foswiki::isValidTopicName($t, 1);
-    } elsif ( $t !~ m/^$Foswiki::regex{wikiWordRegex}$/o ) {
+    if ( defined &Foswiki::isValidTopicName ) {
+
+        #return 0
+        die "CUNT $t" unless Foswiki::isValidTopicName( $t, 1 );
+    }
+    elsif ( $t !~ m/^$Foswiki::regex{wikiWordRegex}$/o ) {
+
         # TWiki doesn't know the difference between wikiwords and topic names.
         return 0;
     }
@@ -480,7 +502,6 @@ sub _parent {
 sub _getMode {
     my ( $web, $topic ) = @_;
     my $mode = 0;    # ----------
-
     if ( !$topic ) {
         if ( !$web || Foswiki::Func::webExists($web) ) {
 
@@ -529,7 +550,7 @@ location will have the /dav prefix removed before processing.
 sub root_path {
     my ( $this, $path ) = @_;
     if ( defined $path ) {
-        $this->{location} = $path;
+        ( $this->{location} ) = _logical2site($path);
     }
     return $this->{location};
 }
@@ -593,13 +614,11 @@ Gets the modification time of a file in YYYYMMDDHHMMSS format.
 =cut
 
 sub modtime {
-    my ($this, $file) = @_;
-    return (0, 0) unless $this->_initSession();
-    # If the encoded filename doesn't exist, then try the unencoded form
-    # in case the file was created on disc
-    $file = _decode($file) unless (-e $file);
-    my @stat = $this->stat($file);
-    return ( 0, '' ) unless scalar( @stat );
+    my $this = shift;
+    return ( 0, 0 ) unless $this->_initSession();
+
+    my @stat = $this->stat( @_ );
+    return ( 0, '' ) unless scalar(@stat);
     my ( $sec, $min, $hr, $dd, $mm, $yy, $wd, $yd, $isdst ) =
       localtime( $stat[9] );
     $yy += 1900;
@@ -616,12 +635,10 @@ Gets the size of a file in bytes.
 =cut
 
 sub size {
-    my ($this, $file) = @_;
+    my $this = shift;
     return 0 unless $this->_initSession();
-    # If the encoded filename doesn't exist, then try the unencoded form
-    # in case the file was created on disc
-    $file = _decode($file) unless (-e $file);
-    my @stat = $this->stat($file);
+
+    my @stat = $this->stat( @_ );
     return $stat[7];
 }
 
@@ -634,22 +651,18 @@ Deletes a file, returns 1 or 0 on success or failure. ($! is set)
 =cut
 
 sub delete {
-    my ( $this, $file ) = @_;
-    return $this->_dispatch( 'delete', $file );
+    my $this = shift;
+    return $this->_dispatch( 'delete', _logical2site(@_) );
 }
 
+# Delete root - always denied
 sub _R_delete {
     return shift->_fail( POSIX::EPERM, undef, '/' );
 }
 
+# Delete attachment - by renaming it to Trash/TrashAttachment
 sub _A_delete {
     my ( $this, $web, $topic, $attachment ) = @_;
-
-    # If the encoded filename doesn't exist, then try the unencoded form
-    # in case the file was created on disc
-    unless ( Foswiki::Func::attachmentExists( $web, $topic, $attachment )) {
-        $attachment = _decode( $attachment );
-    }
 
     my $n = '';
     while (
@@ -662,25 +675,30 @@ sub _A_delete {
         $n++;
     }
     return $this->_A_rename( $web, $topic, $attachment,
-        "/$Foswiki::cfg{TrashWebName}/TrashAttachment$FILES_EXT/$attachment$n" );
+        "/$Foswiki::cfg{TrashWebName}/TrashAttachment$FILES_EXT/$attachment$n"
+    );
 }
 
+# Delete topic - by renaming it to Trash
 sub _T_delete {
     my ( $this, $view, $web, $topic ) = @_;
     my $n = '';
-    while ( Foswiki::Func::topicExists( $Foswiki::cfg{TrashWebName}, "$topic$n" ) )
+    while (
+        Foswiki::Func::topicExists( $Foswiki::cfg{TrashWebName}, "$topic$n" ) )
     {
         $n++;
     }
     return $this->_T_rename( $view, $web, $topic,
-        "$Foswiki::cfg{TrashWebName}/$topic$n".$view->extension() );
+        "$Foswiki::cfg{TrashWebName}/$topic$n" . $view->extension() );
 }
 
+# Delete attachment directory - always denied
 sub _D_delete {
     my ( $this, $web, $topic ) = @_;
     return $this->_fail( POSIX::EPERM, undef, $web, $topic );
 }
 
+# Delete web - always denied
 sub _W_delete {
     my ( $this, $web ) = @_;
     return $this->_fail( POSIX::EPERM, undef, $web );
@@ -695,25 +713,22 @@ Renames a file, returns 1 or 0 on success or failure. ($! is set)
 =cut
 
 sub rename {
-    my ( $this, $source, $destination ) = @_;
-    return $this->_dispatch( 'rename', $source, $destination );
+    my $this = shift;
+    return $this->_dispatch( 'rename', _logical2site(@_) );
 }
 
+# Rename root - always denied
 sub _R_rename {
     return shift->_fail( POSIX::EPERM, undef, '/' );
 }
 
+# Rename attachment
 sub _A_rename {
     my ( $this, $src_web, $src_topic, $src_att, $destination ) = @_;
     return 0 unless $this->_checkLock( $src_web, $src_topic, $src_att );
-    unless ( Foswiki::Func::attachmentExists(
-        $src_web, $src_topic, $src_att ) ) {
-        # If the encoded filename doesn't exist, then try the unencoded form
-        # in case the file was created on disc
-        $src_att = _decode( $src_att );
-    }
-    unless ( Foswiki::Func::attachmentExists(
-        $src_web, $src_topic, $src_att ) ) {
+
+    unless ( Foswiki::Func::attachmentExists( $src_web, $src_topic, $src_att ) )
+    {
         return $this->_fail( POSIX::ENOENT, $src_web, $src_topic, $src_att );
     }
     if ( !_haveAccess( 'CHANGE', $src_web, $src_topic ) ) {
@@ -746,6 +761,7 @@ sub _A_rename {
     return 1;
 }
 
+# Rename topic
 sub _T_rename {
     my ( $this, $view, $src_web, $src_topic, $destination ) = @_;
     return 0 unless $this->_checkLock( $src_web, $src_topic );
@@ -818,7 +834,7 @@ Returns undef on failure or the new path on success.
 
 sub chdir {
     my $this = shift;
-    return $this->_dispatch( 'chdir', @_ );
+    return $this->_dispatch( 'chdir', _logical2site(@_) );
 }
 
 sub _R_chdir {
@@ -865,7 +881,7 @@ on failure. Returns 1 otherwise (directory created or already exists)
 
 sub mkdir {
     my $this = shift;
-    return $this->_dispatch( 'mkdir', @_ );
+    return $this->_dispatch( 'mkdir', _logical2site(@_) );
 }
 
 sub _R_mkdir {
@@ -896,7 +912,10 @@ sub _D_mkdir {
     # Create an attachments dir.
     eval {
 
-        # SMELL: violating store encapsulation
+        # SMELL: violating store encapsulation. We can't do this
+        # through the Func API because we would have to create a
+        # "fake attachment" and then delete it, which would be brutally
+        # inefficient.
         File::Path::mkpath(
             "$Foswiki::cfg{PubDir}/$web/$topic",
             { mode => $Foswiki::cfg{RCS}{dirPermission} }
@@ -947,7 +966,7 @@ failure (sets $!).
 
 sub rmdir {
     my $this = shift;
-    return $this->_dispatch( 'rmdir', @_ );
+    return $this->_dispatch( 'rmdir', _logical2site(@_) );
 }
 
 sub _R_rmdir {
@@ -990,6 +1009,9 @@ sub _T_rmdir {
     return $this->_T_delete( $view, $web, $topic );
 }
 
+# Rmdir attachments dir.
+# SMELL: This *could* be a NOP if the attachments dir is empty.
+# SMELL: Handle error on on-empty dir.
 sub _D_rmdir {
     my ( $this, $web, $topic ) = @_;
     return 0 unless $this->_checkLock( $web, $topic );
@@ -1012,18 +1034,19 @@ on failure.
 
 sub list {
     my $this = shift;
-    my $list = $this->_dispatch( 'list', @_ );
+    my $list = $this->_dispatch( 'list', _logical2site(@_) );
     return () unless $list;
     return () unless scalar(@$list);
-    return sort map { _decode( $_ ) } @$list;
+    return grep( $_ !~ /$excludeRE/, @$list ) if defined $excludeRE;
+    return @$list;
 }
 
 sub _R_list {
     my ( $this, $web ) = @_;
     my @list = grep { !/\// } Foswiki::Func::getListOfWebs('user,public');
-    @list = map { Encode::decode($Foswiki::cfg{Site}{CharSet}, $_) } @list
+    @list = map { Encode::decode( $Foswiki::cfg{Site}{CharSet}, $_ ) } @list
       if defined $Foswiki::cfg{Site}{CharSet};
-    push( @list, '.' );
+    unshift( @list, '.' );
     return \@list;
 }
 
@@ -1037,13 +1060,15 @@ sub _W_list {
         return $this->_fail( POSIX::ENOENT, $web );
     }
     foreach my $f ( Foswiki::Func::getTopicList($web) ) {
+
         # Always list an _files for the topic even if it doesn't exist
         # on disk. Otherwise we have no drag-drop target.
         #if ( _hasAttachments( $web, $f ) ) {
-            push( @list, $f.$FILES_EXT );
+        push( @list, $f . $FILES_EXT );
+
         #}
         foreach my $v (@views) {
-            push(@list, $f.$v->extension());
+            push( @list, $f . $v->extension() );
         }
     }
     foreach my $sweb ( Foswiki::Func::getListOfWebs('user,public') ) {
@@ -1054,7 +1079,7 @@ sub _W_list {
     }
     push( @list, '.' );
     push( @list, '..' );
-    @list = map { Encode::decode($Foswiki::cfg{Site}{CharSet}, $_) } @list
+    @list = map { Encode::decode( $Foswiki::cfg{Site}{CharSet}, $_ ) } @list
       if defined $Foswiki::cfg{Site}{CharSet};
     return \@list;
 }
@@ -1067,22 +1092,23 @@ sub _D_list {
 
     # list attachments
     my @list = ();
-    if (defined &Foswiki::Func::getAttachmentList) {
-        @list = Foswiki::Func::getAttachmentList($web, $topic);
+    if ( defined &Foswiki::Func::getAttachmentList ) {
+        @list = Foswiki::Func::getAttachmentList( $web, $topic );
         # Have to include '.' and '..' to make it look like a dir
-        unshift(@list, '.', '..');
-    } else {
+        unshift( @list, '.', '..' );
+    }
+    else {
+
         # Probably TWiki. Have to violate Store encapsulation
-        my $dir  = "$Foswiki::cfg{PubDir}/$web/$topic";
+        my $dir = "$Foswiki::cfg{PubDir}/$web/$topic";
         if ( opendir( D, $dir ) ) {
             foreach my $e ( grep { !/,v$/ } readdir(D) ) {
                 $e =~ /^(.*)$/;
                 push( @list, $1 );
             }
         }
-        @list = map { Encode::decode($Foswiki::cfg{Site}{CharSet}, $_) } @list
-          if defined $Foswiki::cfg{Site}{CharSet};
     }
+    @list = _site2logical(@list);
     return \@list;
 }
 
@@ -1094,7 +1120,7 @@ sub _T_list {
     if ( !_haveAccess( 'VIEW', $web, $topic ) ) {
         return $this->_fail( POSIX::EACCES, $web, $topic );
     }
-    return [ $topic.$view->extension() ];
+    return [ $topic . $view->extension() ];
 }
 
 sub _A_list {
@@ -1112,13 +1138,50 @@ sub _A_list {
 
 =head2 list_details($file)
 
-*NOT SUPPORTED*
+Returns the files list formatted as an HTML page.
 
 =cut
 
 sub list_details {
-    my $this = shift;
-    return $this->_fail( POSIX::EPERM, @_ );
+    my ( $this, $path ) = @_;
+
+    my $body = Foswiki::Func::loadTemplate('webdav_folder') ||
+	'<html><body>%TITLE%<p>%ENTRIES%</p></body></html>';
+    my $title = $path;
+    if ( $title =~ /^.*\/([^\/]+)$FILES_EXT\/?$/ ) {
+	$title = "$1 - %MAKETEXT{\"Attachments\"}%";
+    }
+    else {
+	$title =~ s/^.*\/([^\/]+)\/?$/$1/;
+    }
+
+    my @entries;
+    foreach my $file ($this->list($path)) {
+	next if $file eq '.';
+	my $url = $path;
+	$url .= '/' unless $path =~ /\/$/;
+	$url .= $file;
+	my $entry;
+	if ( $file eq '..' ) {
+	    $entry = Foswiki::Func::expandTemplate('webdav-updir')
+		|| '<a href="%URL%">..</a><br />';
+	} elsif ( $file =~ s/$FILES_EXT$// ) {
+	    $entry = Foswiki::Func::expandTemplate('webdav-dir')
+		|| '<a href="%URL%">%FILE%/</a><br />';
+	} else {
+	    $entry = Foswiki::Func::expandTemplate('webdav-file')
+		|| '<a href="%URL%">%FILE%</a><br />';
+	}
+	$entry =~ s/%URL%/$url/g;
+	$entry =~ s/%FILE%/$file/g;
+	push( @entries, $entry );
+    }
+    $body =~ s/%TITLE%/$title/g;
+    $body =~ s/%ENTRIES%/join('', @entries)/e;
+    $body = Foswiki::Func::expandCommonVariables( $body );
+    $body = Foswiki::Func::renderText( $body );
+    $body = $Foswiki::Plugins::SESSION->_renderZones($body);
+    return $body;
 }
 
 =pod
@@ -1131,10 +1194,11 @@ Does a normal stat() on a file or directory
 
 # SMELL: this is a major violation of store encapsulation. Should the
 # Foswiki store attempt to provide this sort of info? Really, Filesys::Virtual
-# should be a low-level interface provided by that store.
+# should be a low-level interface provided by that store. It is tolerated
+# because it is required for WebDAV to find properties.
 sub stat {
     my $this = shift;
-    return $this->_dispatch( 'stat', @_ );
+    return $this->_dispatch( 'stat', _logical2site(@_) );
 }
 
 sub _R_stat {
@@ -1163,6 +1227,8 @@ sub _D_stat {
 
 sub _T_stat {
     my ( $this, $view, $web, $topic ) = @_;
+    # SMELL: should META:TOPICINFO override what stat() says? It would
+    # be very slow :-(
     return () unless -e "$Foswiki::cfg{DataDir}/$web/$topic.txt";
     my @stat = CORE::stat("$Foswiki::cfg{DataDir}/$web/$topic.txt");
     $stat[2] = _getMode( $web, $topic );
@@ -1171,15 +1237,12 @@ sub _T_stat {
 
 sub _A_stat {
     my ( $this, $web, $topic, $attachment ) = @_;
-    unless ( Foswiki::Func::attachmentExists(
-        $web, $topic, $attachment ) ) {
-        # If the encoded filename doesn't exist, then try the unencoded form
-        # in case the file was created on disc
-        $attachment = _decode( $attachment );
-    }
-    return () unless Foswiki::Func::attachmentExists(
-        $web, $topic, $attachment );
+    return ()
+      unless Foswiki::Func::attachmentExists( $web, $topic, $attachment );
+
     # SMELL: using filesystem
+    # SMELL: should META:FILEATTACHMENT override what stat() says? It would
+    # be very slow :-(
     my @stat = CORE::stat("$Foswiki::cfg{PubDir}/$web/$topic/$attachment");
     $stat[2] = _getMode( $web, $topic );
     return @stat;
@@ -1233,8 +1296,8 @@ For example to perform a -d on a directory.
 =cut
 
 sub test {
-    my ( $this, $mode, $file ) = @_;
-    return $this->_dispatch( 'test', $file, $mode );
+    my ( $this, $test, $path ) = @_;
+    return $this->_dispatch( 'test', _logical2site($path), $test );
 }
 
 sub _R_test {
@@ -1261,9 +1324,7 @@ sub _R_test {
 
 sub _A_test {
     my ( $this, $web, $topic, $attachment, $type ) = @_;
-    unless ( Foswiki::Func::attachmentExists( $web, $topic, $attachment )) {
-        $attachment = _decode( $attachment );
-    }
+
     if ( $type =~ /r/i ) {
 
         # File is readable by effective/real uid/gid.
@@ -1441,8 +1502,8 @@ meta-data associated with the topic.
 =cut
 
 sub open_read {
-    my ( $this, $file, @params ) = @_;
-    return $this->_dispatch( 'open_read', $file, @params );
+    my $this = shift;
+    return $this->_dispatch( 'open_read', _logical2site(@_) );
 }
 
 sub _R_open_read {
@@ -1472,11 +1533,7 @@ sub _A_open_read {
         return $this->_fail( POSIX::EACCES, $web, $topic, $attachment );
     }
 
-    unless ( Foswiki::Func::attachmentExists( $web, $topic, $attachment )) {
-        $attachment = _decode( $attachment );
-    }
-
-    my $data = Foswiki::Func::readAttachment($web, $topic, $attachment);
+    my $data = Foswiki::Func::readAttachment( $web, $topic, $attachment );
     return IO::String->new($data);
 }
 
@@ -1503,8 +1560,8 @@ Returns the filehandle on success or undef on failure.
 =cut
 
 sub open_write {
-    my ( $this, $file, $append ) = @_;
-    return $this->_dispatch( 'open_write', $file, $append || 0 );
+    my $this = shift;
+    return $this->_dispatch( 'open_write', _logical2site(@_) );
 }
 
 sub _R_open_write {
@@ -1524,59 +1581,66 @@ sub _makeWriteHandle {
     my $this = shift;
     my %opts = @_;
 
-    my $name = Foswiki::Func::getWorkArea(
-        'FilesysVirtualPlugin' ).join('_', @{$opts{path}});
-    my $fh = new IO::File($name, 'w');
+    my $name =
+      Foswiki::Func::getWorkArea('FilesysVirtualPlugin')
+      . join( '_', @{ $opts{path} } );
+    my $fh = new IO::File( $name, 'w' );
     $this->{_filehandles}->{$fh} = \%opts;
     return $fh;
 }
 
 # Close attachment write handle
 sub _A_closeHandle {
-    my ($this, $fh, $fn, $rec) = @_;
+    my ( $this, $fh, $fn, $rec ) = @_;
     my $result;
-    my @stats = CORE::stat( $fh );
+    my @stats    = CORE::stat($fh);
     my $fileSize = $stats[7];
     eval {
-	#WORKAROUND to retain attachment comment
-	my ($web, $topic, $attachment) = @{$rec->{path}};
-	my( $meta, $text ) = Foswiki::Func::readTopic( $web, $topic );
-	my $args = $meta->get( 'FILEATTACHMENT', $attachment );
-	my $comment = $args->{comment} || '';
-	my $isHideChecked = 0;
-        if ( defined($args->{attr}) and ($args->{attr} =~ /h/o) ) {
-	    $isHideChecked = 1;
+
+        #WORKAROUND to retain attachment comment
+        my ( $web, $topic, $attachment ) = @{ $rec->{path} };
+        my ( $meta, $text ) = Foswiki::Func::readTopic( $web, $topic );
+        my $args = $meta->get( 'FILEATTACHMENT', $attachment );
+        my $comment = $args->{comment} || '';
+        my $isHideChecked = 0;
+        if ( defined( $args->{attr} ) and ( $args->{attr} =~ /h/o ) ) {
+            $isHideChecked = 1;
         }
 
-        $result = Foswiki::Func::saveAttachment( @{$rec->{path}}, {
-            stream => $fh, 
-            filesize => $fileSize,
-            tmpFilename => $fn,
-            filedate => time(), 
-	    comment => $comment,
-	    hide => $isHideChecked
-	} );
+        $result = Foswiki::Func::saveAttachment(
+            @{ $rec->{path} },
+            {
+                stream      => $fh,
+                filesize    => $fileSize,
+                tmpFilename => $fn,
+                filedate    => time(),
+                comment     => $comment,
+                hide        => $isHideChecked
+            }
+        );
     };
     if ($@) {
+
         # In case it dies
         $result = $@;
-    };
+    }
     if ($result) {
+
         # Emit the full message to STDERR
         print STDERR $result;
-        return EACCES ;
+        return EACCES;
     }
     return 0;
 }
 
 # Close topic write handle
 sub _T_closeHandle {
-    my ($this, $fh, $fn, $rec) = @_;
+    my ( $this, $fh, $fn, $rec ) = @_;
 
     local $/;
     my $text = <$fh>;
-    close( $fh );
-    return $rec->{view}->write( @{$rec->{path}}, $text );
+    close($fh);
+    return $rec->{view}->write( @{ $rec->{path} }, $text );
 }
 
 sub _T_open_write {
@@ -1587,10 +1651,11 @@ sub _T_open_write {
     }
 
     return $this->_makeWriteHandle(
-        type => 'T',
-        path => [ $web, $topic ],
+        type   => 'T',
+        path   => [ $web, $topic ],
         append => $append,
-        view => $view );
+        view   => $view
+    );
 }
 
 sub _A_open_write {
@@ -1600,18 +1665,11 @@ sub _A_open_write {
         return $this->_fail( POSIX::EACCES, $web, $topic );
     }
 
-    unless ( Foswiki::Func::attachmentExists( $web, $topic, $attachment )) {
-        # If an attachment with the unmapped name already exists, reuse
-        # the unmapped name.
-        my $trueatt = _decode( $attachment );
-        if ( Foswiki::Func::attachmentExists( $web, $topic, $trueatt )) {
-            $attachment = $trueatt;
-        }
-    }
     return $this->_makeWriteHandle(
-        type => 'A',
-        path => [ $web, $topic, $attachment ],
-        append => $append );
+        type   => 'A',
+        path   => [ $web, $topic, $attachment ],
+        append => $append
+    );
 }
 
 =pod
@@ -1630,18 +1688,20 @@ sub close_write {
     my $result;
     if ($rec) {
         my $path = $rec->{path};
-        my $tmpfile = Foswiki::Func::getWorkArea(
-            'FilesysVirtualPlugin' ).join('_', @$path);
+        my $tmpfile =
+          Foswiki::Func::getWorkArea('FilesysVirtualPlugin')
+          . join( '_', @$path );
         my $tfh;
-        open($tfh, '<', $tmpfile) or
-          die "Failed to open temporary file $tmpfile";
+        open( $tfh, '<', $tmpfile )
+          or die "Failed to open temporary file $tmpfile";
 
-        my $fn = '_'.$rec->{type}.'_closeHandle';
+        my $fn = '_' . $rec->{type} . '_closeHandle';
+
         #print STDERR "Call $fn to close write\n";
-        $result = $this->$fn($tfh, $tmpfile, $rec);
+        $result = $this->$fn( $tfh, $tmpfile, $rec );
 
         unlink($tmpfile);
-        delete($this->{_filehandles}->{$fh});
+        delete( $this->{_filehandles}->{$fh} );
     }
     return $result;
 }
@@ -1694,7 +1754,10 @@ XATTR_CREATE and XATTR_REPLACE are provided by this module.
 =cut
 
 sub setxattr {
-    my ( $this, $file, $name, $val, $flags ) = @_;
+    my $this = shift;
+
+    # Note: does not use Foswiki, so names are kept as logical perl strings
+    my ( $file, $name, $val, $flags ) = @_;
     $flags ||= 0;
 
     return POSIX::EOPNOTSUPP unless $this->_initSession();
@@ -1744,7 +1807,10 @@ Called to get the value of the named extended attribute.
 =cut
 
 sub getxattr {
-    my ( $this, $file, $name ) = @_;
+    my $this = shift;
+
+    # Note: does not use Foswiki, so names are kept as logical perl strings
+    my ( $file, $name ) = @_;
     return 0 unless $this->_initSession();
     my $path = $this->_parseResource($file);
     unless ($path) {
@@ -1770,6 +1836,8 @@ Called to get the value of the named extended attribute.
 
 sub listxattr {
     my ( $this, $file ) = @_;
+
+    # Note: does not use Foswiki, so names are kept as logical perl strings
     return () unless $this->_initSession();
     my $path = $this->_parseResource($file);
     my $pathkey = join( "\0", @$path );
@@ -1787,7 +1855,10 @@ Returns an errno or 0 on success.
 =cut
 
 sub removexattr {
-    my ( $this, $file, $name ) = @_;
+    my $this = shift;
+
+    # Note: does not use Foswiki, so names are kept as logical perl strings
+    my ( $file, $name ) = @_;
     return POSIX::EOPNOTSUPP unless $this->_initSession();
     my $path    = $this->_parseResource($file);
     my $pathkey = join( "\0", @$path );
@@ -1803,53 +1874,125 @@ sub removexattr {
     return 0;
 }
 
+=pod
+
+=head2 lock_types($path)
+
+Return a bitmask of the lock types supported for this resource
+(1 => exclusive, 2 => shared)
+
+=cut
+
 sub lock_types {
-    my ($this, $path) = @_;
-    return 3; # exclusive and shared (advisory) locks supported
+    return 3;    # exclusive and shared (advisory) locks supported
 }
 
+=pod
+
+=head2 add_lock($path, %lock_data)
+
+Add a lock for the given resource. The follwing lock field names are reserved:
+   * token - unique token identifying the lock
+   * path - resource path
+   * depth - depth of the lock, 0 = single level
+   * taken - epoch time the lock was taken
+Other fields will be preserved in the lock.
+
+=cut
+
 sub add_lock {
-    my ($this, %lockstat) = @_;
+    my ( $this, %lockstat ) = @_;
     return unless $this->_initSession();
     $lockstat{taken} ||= time();
+
     #$Foswiki::Plugins::SESSION->{store}
     #  ->setLease( $web, $topic, $locktoken, $Foswiki::cfg{LeaseLength} );
     $this->_locks->addLock(%lockstat);
 }
 
+=pod
+
+=head2 refresh_lock($token)
+
+Refresh (set the time to now) the lock with the given identifying token.
+
+=cut
+
 sub refresh_lock {
-    my ($this, $locktoken) = @_;
+    my ( $this, $locktoken ) = @_;
     return unless $this->_initSession();
+
     #$Foswiki::Plugins::SESSION->{store}
     #  ->setLease( $web, $topic, $locktoken, $Foswiki::cfg{LeaseLength} );
     my $lock = $this->_locks->getLock($locktoken);
     $lock->{taken} = time() if $lock;
 }
 
-# Boolean true if it succeeded
-sub remove_lock {
-    my ($this, $locktoken) = @_;
+=pod
+
+=head2 has_lock($token)
+
+Returns a boolean indicating whether a lock exists for the given token.
+
+=cut
+
+# meyer@modell-aachen.de:
+# Helper method used by WebDAVContrib.
+# See method UNLOCK.
+sub has_lock {
+    my ( $this, $locktoken ) = @_;
     return unless $this->_initSession();
+    my $lock = $this->_locks->getLock( $locktoken );
+    return ( $lock ? 1 : 0 );
+}
+
+=pod
+
+=head2 remove_lock($token) -> $boolean
+
+Return true if it succeeded
+
+=cut
+
+sub remove_lock {
+    my ( $this, $locktoken ) = @_;
+    return unless $this->_initSession();
+
     #$Foswiki::Plugins::SESSION->{store}->clearLease( $web, $topic );
     return $this->_locks->removeLock($locktoken);
 }
 
-# Get the locks active on the given path
+=pod
+
+=head2 get_locks($path, $recurse) -> @locks
+
+Get the locks on all resources above the given path which have deoth != 0.
+If $recurse is true, also get locks in the subtree under the path. Returns
+an array of hashes, each of which contains a lock.
+
+=cut
+
 sub get_locks {
-    my ($this, $path, $recurse) = @_;
+    my ( $this, $path, $recurse ) = @_;
+
+    # Note: does not use Foswiki, so names are kept as logical perl strings
     return () unless $this->_initSession();
-    my @locks = $this->_locks->getLocks($path, $recurse);
+    my @locks = $this->_locks->getLocks( $path, $recurse );
+
     # reap timed-out locks on this resource
     my $i = scalar(@locks) - 1;
-    while ($i >= 0) {
+    while ( $i >= 0 ) {
         my $lock = $locks[$i];
-        if (!$lock->{token}) {
+        if ( !$lock->{token} ) {
+
             #Carp::confess - this should never happen
-            splice(@locks, $i, 1);
-        } elsif ($lock->{timeout} >= 0
-                    && $lock->{taken} + $lock->{timeout} < time()) {
-            $this->_locks->removeLock($lock->{token});
-            splice(@locks, $i, 1);
+            splice( @locks, $i, 1 );
+        }
+        elsif ($lock->{timeout} >= 0
+            && $lock->{taken} + $lock->{timeout} < time() )
+        {
+            $this->_locks->removeLock( $lock->{token} );
+            splice( @locks, $i, 1 );
         }
         $i--;
     }
@@ -1862,7 +2005,7 @@ __END__
 
 Copyright (C) 2008 KontextWork.de
 Copyright (C) 2011 WikiRing http://wikiring.com
-Copyright (C) 2008-2012 Crawford Currie http://c-dot.co.uk
+Copyright (C) 2008-2013 Crawford Currie http://c-dot.co.uk
 
 This program is licensed to you under the terms of the GNU General
 Public License, version 2. It is distributed in the hope that it will

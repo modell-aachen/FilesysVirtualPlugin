@@ -6,7 +6,7 @@
 #
 package Filesys::Virtual::PlainPlusAttrs;
 use Filesys::Virtual::Plain;
-push(@ISA, 'Filesys::Virtual::Plain');
+push( @ISA, 'Filesys::Virtual::Plain' );
 
 use strict;
 use POSIX ':errno_h';
@@ -15,14 +15,14 @@ use Data::Dumper;
 use Filesys::Virtual::Locks;
 
 our $VAR1;
-our $VERSION = '$Rev: 1208 $';
-our $RELEASE = '1.6.1-/jidQrcaozxnxTDSHEh3qA';
+our $VERSION = '1.6.1';
+our $RELEASE = '%$TRACKINGCODE%';
 
 sub new {
-    my ($class, $args) = @_;
+    my ( $class, $args ) = @_;
     $args->{root_path} = '/home/crawford/litmus_test/';
     my $this = $class->SUPER::new($args);
-	my $f = $this->_path_from_root('/chav/');
+    my $f    = $this->_path_from_root('/chav/');
     $this->{locks} = new Filesys::Virtual::Locks("/tmp/plainfilelocks");
     return $this;
 }
@@ -32,45 +32,45 @@ sub login {
 }
 
 sub getxattr {
-    my ($this, $path, $name) = @_;
+    my ( $this, $path, $name ) = @_;
     my $attrs = $this->_readAttrs($path);
-    $!= POSIX::EBADF unless defined $attrs->{$name};
+    $! = POSIX::EBADF unless defined $attrs->{$name};
     return $attrs->{$name};
 }
 
 sub setxattr {
-    my ($this, $path, $name, $val, $flags) = @_;
+    my ( $this, $path, $name, $val, $flags ) = @_;
     my $attrs = $this->_readAttrs($path);
     $attrs->{$name} = $val;
-    return $this->_writeAttrs($path, $attrs);
+    return $this->_writeAttrs( $path, $attrs );
 }
 
 sub removexattr {
-    my ($this, $path, $name, $val, $flags) = @_;
+    my ( $this, $path, $name, $val, $flags ) = @_;
     my $attrs = $this->_readAttrs($path);
     delete $attrs->{$name};
-    return $this->_writeAttrs($path, $attrs);
+    return $this->_writeAttrs( $path, $attrs );
 }
 
 sub listxattr {
-    my ($this, $path) = @_;
+    my ( $this, $path ) = @_;
     my $attrs = $this->_readAttrs($path);
-    return (keys %$attrs, 0);
+    return ( keys %$attrs, 0 );
 }
 
 sub lock_types {
-    my ($this, $path) = @_;
-    return 3; # exclusive and shared (advisory) locks supported
+    my ( $this, $path ) = @_;
+    return 3;    # exclusive and shared (advisory) locks supported
 }
 
 sub add_lock {
-    my ($this, %lockstat) = @_;
+    my ( $this, %lockstat ) = @_;
     $lockstat{taken} ||= time();
-    $this->{locks}->addLock(taken => time(), %lockstat);
+    $this->{locks}->addLock( taken => time(), %lockstat );
 }
 
 sub refresh_lock {
-    my ($this, $locktoken) = @_;
+    my ( $this, $locktoken ) = @_;
     Carp::confess unless $locktoken;
     my $lock = $this->{locks}->getLock($locktoken);
     $lock->{taken} = time();
@@ -78,25 +78,28 @@ sub refresh_lock {
 
 # Boolean true if it succeeded
 sub remove_lock {
-    my ($this, $locktoken) = @_;
+    my ( $this, $locktoken ) = @_;
     Carp::confess unless $locktoken;
     $this->{locks}->removeLock($locktoken);
 }
 
 # Get the locks active on the given path
 sub get_locks {
-    my ($this, $path, $recurse) = @_;
-    my @locks = $this->{locks}->getLocks($path, $recurse);
+    my ( $this, $path, $recurse ) = @_;
+    my @locks = $this->{locks}->getLocks( $path, $recurse );
+
     # reap timed-out locks on this resource
     my $i = scalar(@locks) - 1;
-    while ($i >= 0) {
+    while ( $i >= 0 ) {
         my $lock = $locks[$i];
         Carp::confess unless $lock->{token};
-        if ($lock->{timeout} >= 0
-              && $lock->{taken} + $lock->{timeout} < time()) {
-            $this->{locks}->removeLock($lock->{token});
-            splice(@locks, $i, 1);
-        } else {
+        if (   $lock->{timeout} >= 0
+            && $lock->{taken} + $lock->{timeout} < time() )
+        {
+            $this->{locks}->removeLock( $lock->{token} );
+            splice( @locks, $i, 1 );
+        }
+        else {
             $i--;
         }
     }
@@ -104,9 +107,9 @@ sub get_locks {
 }
 
 sub _readAttrs {
-    my ($this, $path) = @_;
-	my $f = $this->_attrsFile($path);
-    if (open(F, "<", $f)) {
+    my ( $this, $path ) = @_;
+    my $f = $this->_attrsFile($path);
+    if ( open( F, "<", $f ) ) {
         local $/;
         eval(<F>);
         close(F);
@@ -116,21 +119,23 @@ sub _readAttrs {
 }
 
 sub _writeAttrs {
-    my ($this, $path, $attrs) = @_;
-	my $f = $this->_attrsFile($path);
-    open(F, ">", $f) || return $!;
-    print F Data::Dumper->Dump([$attrs]);
+    my ( $this, $path, $attrs ) = @_;
+    my $f = $this->_attrsFile($path);
+    open( F, ">", $f ) || return $!;
+    print F Data::Dumper->Dump( [$attrs] );
     close(F);
 }
 
 sub _attrsFile {
-    my ($this, $path) = @_;
+    my ( $this, $path ) = @_;
     my $f = $this->_path_from_root($path);
-    if (-d $f) {
+    if ( -d $f ) {
         return "$f/.PlainPlusAttrs";
-    } elsif ($f =~ m#(.*)\/(.*?)#) {
+    }
+    elsif ( $f =~ m#(.*)\/(.*?)# ) {
         return "$1/.PlainPlusAttrs_$2";
-    } else {
+    }
+    else {
         die "COCKUP $f";
     }
 }

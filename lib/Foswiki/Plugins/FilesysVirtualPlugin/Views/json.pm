@@ -2,48 +2,47 @@
 package Foswiki::Plugins::FilesysVirtualPlugin::Views::json;
 
 use strict;
-use IO::String ();
-use JSON ();
+use IO::String    ();
+use JSON          ();
 use Foswiki::Func ();
 
-our $VERSION = '$Rev: 1208 $';
-our $RELEASE = '1.6.1-/jidQrcaozxnxTDSHEh3qA';
+our $VERSION = '1.6.1';
+our $RELEASE = '%$TRACKINGCODE%';
 
-sub extension { '.json' };
+sub extension { '.json' }
 
 sub read {
-    my ($this, $web, $topic) = @_;
+    my ( $this, $web, $topic ) = @_;
 
-    my ($meta, $text) = Foswiki::Func::readTopic($web, $topic);
+    my ( $meta, $text ) = Foswiki::Func::readTopic( $web, $topic );
+
     # Trim back the meta to a useable form
     my %data;
-    foreach my $k (keys %$meta) {
-        if ($k !~ /^_/ || $k eq '_text') {
+    foreach my $k ( keys %$meta ) {
+        if ( $k !~ /^_/ || $k eq '_text' ) {
             $data{$k} = $meta->{$k};
         }
     }
-    unless (defined $data{_text}) {
+    unless ( defined $data{_text} ) {
         $data{_text} = $text;
     }
-    return IO::String->new(JSON::to_json(\%data));
+    return IO::String->new( JSON::to_json( \%data ) );
 }
 
 sub write {
-    my ($this, $web, $topic, $json) = @_;
+    my ( $this, $web, $topic, $json ) = @_;
 
-    my ($meta, $text) = Foswiki::Func::readTopic($web, $topic);
+    my ( $meta, $text ) = Foswiki::Func::readTopic( $web, $topic );
 
     # SMELL: untaint?
     my $data = JSON::from_json($json);
-    foreach my $k (keys %$data) {
-        if ($k !~ /^_/ || $k eq '_text') {
+    foreach my $k ( keys %$data ) {
+        if ( $k !~ /^_/ || $k eq '_text' ) {
             $meta->{$k} = $data->{$k};
         }
     }
     $text = $data->{_text} if defined $data->{_text};
-    eval {
-        Foswiki::Func::saveTopic( $web, $topic, $meta, $text );
-    };
+    eval { Foswiki::Func::saveTopic( $web, $topic, $meta, $text ); };
     return $@;
 }
 

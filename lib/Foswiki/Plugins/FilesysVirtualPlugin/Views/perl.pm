@@ -2,51 +2,50 @@
 package Foswiki::Plugins::FilesysVirtualPlugin::Views::perl;
 
 use strict;
-use IO::String ();
-use Data::Dumper ();
+use IO::String    ();
+use Data::Dumper  ();
 use Foswiki::Func ();
 
-our $VERSION = '$Rev: 1208 $';
-our $RELEASE = '1.6.1-/jidQrcaozxnxTDSHEh3qA';
+our $VERSION = '1.6.1';
+our $RELEASE = '%$TRACKINGCODE%';
 our $data;
 
-sub extension { '.perl' };
+sub extension { '.perl' }
 
 sub read {
-    my ($this, $web, $topic) = @_;
+    my ( $this, $web, $topic ) = @_;
 
-    my ($meta, $text) = Foswiki::Func::readTopic($web, $topic);
+    my ( $meta, $text ) = Foswiki::Func::readTopic( $web, $topic );
+
     # Trim back the meta to a useable form
     my %wdata;
-    foreach my $k (keys %$meta) {
-        if ($k !~ /^_/) {
+    foreach my $k ( keys %$meta ) {
+        if ( $k !~ /^_/ ) {
             $wdata{$k} = $meta->{$k};
         }
     }
-    unless (defined $wdata{_text}) {
+    unless ( defined $wdata{_text} ) {
         $wdata{_text} = $text;
     }
-    return IO::String->new(Data::Dumper->Dump([\%wdata], ['data']));
+    return IO::String->new( Data::Dumper->Dump( [ \%wdata ], ['data'] ) );
 }
 
 sub write {
-    my ($this, $web, $topic, $perl) = @_;
+    my ( $this, $web, $topic, $perl ) = @_;
 
-    my ($meta, $text) = Foswiki::Func::readTopic($web, $topic);
+    my ( $meta, $text ) = Foswiki::Func::readTopic( $web, $topic );
 
     # SMELL: untaint?
     local $data;
-    eval ($perl);
-    foreach my $k (keys %$data) {
-        if ($k !~ /^_/) {
+    eval($perl);
+    foreach my $k ( keys %$data ) {
+        if ( $k !~ /^_/ ) {
             $meta->{$k} = $data->{$k};
         }
     }
     $text = $data->{_text} if defined $data->{_text};
 
-    eval {
-        Foswiki::Func::saveTopic( $web, $topic, $meta, $text );
-    };
+    eval { Foswiki::Func::saveTopic( $web, $topic, $meta, $text ); };
     return $@;
 }
 

@@ -2,37 +2,36 @@
 package Foswiki::Plugins::FilesysVirtualPlugin::Views::html;
 
 use strict;
-use IO::String ();
-use Foswiki::Func ();
+use IO::String                                ();
+use Foswiki::Func                             ();
 use Foswiki::Plugins::WysiwygPlugin::Handlers ();
 
-our $VERSION = '$Rev: 1208 $';
-our $RELEASE = '1.6.1-/jidQrcaozxnxTDSHEh3qA';
+our $VERSION = '1.6.1';
+our $RELEASE = '%$TRACKINGCODE%';
 
-sub extension { '.html' };
+sub extension { '.html' }
 
 sub read {
-    my ($this, $web, $topic) = @_;
+    my ( $this, $web, $topic ) = @_;
 
-    my ($meta, $text) = Foswiki::Func::readTopic($web, $topic);
-    $text = Foswiki::Plugins::WysiwygPlugin::Handlers::TranslateTML2HTML(
-        $text, $web, $topic );
+    my ( $meta, $text ) = Foswiki::Func::readTopic( $web, $topic );
+    $text =
+      Foswiki::Plugins::WysiwygPlugin::Handlers::TranslateTML2HTML( $text, $web,
+        $topic );
     return IO::String->new("<html><body>$text</body></html>");
 }
 
 sub write {
-    my ($this, $web, $topic, $text) = @_;
+    my ( $this, $web, $topic, $text ) = @_;
 
-    my ($meta, $dummy) = Foswiki::Func::readTopic($web, $topic);
+    my ( $meta, $dummy ) = Foswiki::Func::readTopic( $web, $topic );
 
     $text =~ s/^.*?<body[^>]*>\s*//si;
     $text =~ s/<\/body>.*//si;
-    $text = Foswiki::Plugins::WysiwygPlugin::Handlers::TranslateHTML2TML(
-        $text, $topic, $web );
+    $text = Foswiki::Plugins::WysiwygPlugin::Handlers::TranslateHTML2TML( $text,
+        $topic, $web );
 
-    eval {
-        Foswiki::Func::saveTopic( $web, $topic, $meta, $text );
-    };
+    eval { Foswiki::Func::saveTopic( $web, $topic, $meta, $text ); };
     return $@;
 }
 

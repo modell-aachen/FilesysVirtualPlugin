@@ -10,8 +10,8 @@ use Foswiki::Func;
 # and maintains a database of protections, using BerkelyDB.
 package Foswiki::Plugins::FilesysVirtualPlugin::Permissions;
 
-our $VERSION = '$Rev: 1208 $';
-our $RELEASE = '1.6.1-/jidQrcaozxnxTDSHEh3qA';
+our $VERSION = '1.6.1';
+our $RELEASE = '%$TRACKINGCODE%';
 
 my $setWebRE   = qr/^\s+\*\s+Set\s+(ALLOW|DENY)WEB([A-Z]+?)\s+=\s+(.+?)\s*$/;
 my $setTopicRE = qr/^\s+\*\s+Set\s+(ALLOW|DENY)TOPIC([A-Z]+?)\s+=\s+(.+?)\s*$/;
@@ -58,7 +58,8 @@ sub _processWeb {
         $this->_processTopic( $web, $topic );
         $npr++;
     }
-    my @webs = $Foswiki::Plugins::SESSION->{store}->getListOfWebs( 'user', $web );
+    my @webs =
+      $Foswiki::Plugins::SESSION->{store}->getListOfWebs( 'user', $web );
     foreach my $subweb (@webs) {
         $this->_processWeb( "$web/$subweb", undef );
     }
@@ -177,7 +178,7 @@ sub _defineGroup {
 sub _tieDB {
     my ( $this, $hash ) = @_;
     tie(
-        %hash, 'BerkeleyDB::Hash',
+        %$hash, 'BerkeleyDB::Hash',
         -Filename => $this->{dbfile},
         -Flags    => BerkeleyDB::DB_CREATE
     );

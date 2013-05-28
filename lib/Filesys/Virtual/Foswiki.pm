@@ -1682,7 +1682,12 @@ Performs a $fh->close() on a write handle. 0 return for no error.
 
 sub close_write {
     my ( $this, $fh ) = @_;
-    return 0 unless $this->_initSession();
+    
+    # meyer@modell-aachen
+    # In case _initSession() failes we should return a non-zero value.
+    # (see description above: Apache/WebDAV.pm relays on this)
+    return 1 unless $this->_initSession();
+    
     $fh->close();
     my $rec = $this->{_filehandles}->{$fh};
     my $result;

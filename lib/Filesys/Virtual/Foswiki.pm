@@ -1733,7 +1733,7 @@ sub close_write {
 
 	my $tfh;
 	open( $tfh, '<', $tmpfile )
-          or die "Failed to open temporary file $tmpfile"
+          or die "Failed to open temporary file $tmpfile";
         my $fn = '_' . $rec->{type} . '_closeHandle';
 
         #print STDERR "Call $fn to close write\n";

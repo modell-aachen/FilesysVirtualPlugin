@@ -163,6 +163,34 @@ sub _initSession {
           . " is the user authenticated?";
         return 0;
     }
+    
+    # meyer@modell-aachen.de
+    # Add support for virtual hosting.
+    # See package VirtualHostingContrib for further details.
+    eval {
+	my $request = $this->{session}->{request};
+	my $host = $request->virtual_host();
+	my $port = $request->virtual_port();
+	
+	require Foswiki::Contrib::VirtualHostingContrib::VirtualHost;
+	my $vhost = Foswiki::Contrib::VirtualHostingContrib::VirtualHost->find( $host, $port );
+	my $vconfig = $vhost->run( sub {
+	    my $config = {
+		PubDir		=> $Foswiki::cfg{PubDir},
+		WorkingDir	=> $Foswiki::cfg{WorkingDir},
+		DataDir		=> $Foswiki::cfg{DataDir},
+	    };
+	    
+	    return $config;
+	} );
+	$Foswiki::cfg{PubDir} = $vconfig->{PubDir};
+	$Foswiki::cfg{WorkingDir} = $vconfig->{WorkingDir};
+	$Foswiki::cfg{DataDir} = $vconfig->{DataDir};
+    };
+    if ( $@ ) {
+	# nothing...
+    }
+    
     return $this->{session};
 }
 
@@ -1595,6 +1623,12 @@ sub _A_closeHandle {
     my $result;
     my @stats    = CORE::stat($fh);
     my $fileSize = $stats[7];
+
+    # meyer@modell-aachen.de
+    # In case something went wrong and we don't get a valid handle
+    # we return here and let WebDAVContrib know to send a HTTP_BAD_REQUEST response.
+    return 1 unless $fileSize;
+
     eval {
 
         #WORKAROUND to retain attachment comment
@@ -1612,7 +1646,7 @@ sub _A_closeHandle {
             {
                 stream      => $fh,
                 filesize    => $fileSize,
-                tmpFilename => $fn,
+                file	    => $fn,
                 filedate    => time(),
                 comment     => $comment,
                 hide        => $isHideChecked
@@ -1686,7 +1720,7 @@ sub close_write {
     # meyer@modell-aachen
     # In case _initSession() failes we should return a non-zero value.
     # (see description above: Apache/WebDAV.pm relays on this)
-    return 1 unless $this->_initSession();
+    return POSIX::EACCES unless $this->_initSession();
     
     $fh->close();
     my $rec = $this->{_filehandles}->{$fh};
@@ -1696,10 +1730,10 @@ sub close_write {
         my $tmpfile =
           Foswiki::Func::getWorkArea('FilesysVirtualPlugin')
           . join( '_', @$path );
-        my $tfh;
-        open( $tfh, '<', $tmpfile )
-          or die "Failed to open temporary file $tmpfile";
 
+	my $tfh;
+	open( $tfh, '<', $tmpfile )
+          or die "Failed to open temporary file $tmpfile"
         my $fn = '_' . $rec->{type} . '_closeHandle';
 
         #print STDERR "Call $fn to close write\n";

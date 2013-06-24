@@ -3,8 +3,8 @@ package Foswiki::Plugins::FilesysVirtualPlugin;
 
 use strict;
 
-our $VERSION = '1.6.6';
-our $RELEASE = '1.6.6';
+our $VERSION = '1.6.7';
+our $RELEASE = '1.6.7';
 our $SHORTDESCRIPTION =
   'Implementation of the Filesys::Virtual protocol over a Foswiki store';
 

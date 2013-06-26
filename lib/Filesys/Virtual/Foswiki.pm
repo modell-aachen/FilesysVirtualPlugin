@@ -185,7 +185,6 @@ sub _initSession {
 		# Possible fix for wrong/missing web and topic name
 		# Part 2
 		if ( $newPathInfo ) {
-				print STDERR "setting new pathInfo to '$newPathInfo'\n";
 				$this->{session}->{request}->pathInfo( $newPathInfo );
 		}
 		

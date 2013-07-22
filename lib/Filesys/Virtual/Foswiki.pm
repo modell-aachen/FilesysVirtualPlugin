@@ -172,7 +172,7 @@ sub _initSession {
 		if ( $@ ) {
 				# ignore...
 		}
-		
+
     # Initialise the session, if required
 		$this->{session} = new Foswiki( undef, undef, { dav => 1 } );
     if ( !$this->{session} || !$Foswiki::Plugins::SESSION ) {
@@ -180,14 +180,14 @@ sub _initSession {
           . " is the user authenticated?";
         return 0;
     }
-    
+
 		# meyer@modell-aachen.de
 		# Possible fix for wrong/missing web and topic name
 		# Part 2
 		if ( $newPathInfo ) {
 				$this->{session}->{request}->pathInfo( $newPathInfo );
 		}
-		
+
     # meyer@modell-aachen.de
     # Add support for virtual hosting.
     # See package VirtualHostingContrib for further details.
@@ -195,7 +195,7 @@ sub _initSession {
 				my $request = $this->{session}->{request};
 				my $host = $request->virtual_host();
 				my $port = $request->virtual_port();
-	
+
 				require Foswiki::Contrib::VirtualHostingContrib::VirtualHost;
 				my $vhost = Foswiki::Contrib::VirtualHostingContrib::VirtualHost->find( $host, $port );
 				my $vconfig = $vhost->run( sub {
@@ -204,10 +204,10 @@ sub _initSession {
 								WorkingDir	=> $Foswiki::cfg{WorkingDir},
 								DataDir			=> $Foswiki::cfg{DataDir},
 						};
-	    
+
 						return $config;
 				} );
-	
+
 				$Foswiki::cfg{PubDir} = $vconfig->{PubDir};
 				$Foswiki::cfg{WorkingDir} = $vconfig->{WorkingDir};
 				$Foswiki::cfg{DataDir} = $vconfig->{DataDir};
@@ -215,7 +215,7 @@ sub _initSession {
     if ( $@ ) {
 				# nothing...
     }
-    
+
     return $this->{session};
 }
 
@@ -1724,6 +1724,11 @@ sub _A_open_write {
         return $this->_fail( POSIX::EACCES, $web, $topic );
     }
 
+    # meyer: fix for subwebs
+    if ( $web =~ /(.+)\/(.+)/ ) {
+        $web = "$1.$2";
+    }
+
     return $this->_makeWriteHandle(
         type   => 'A',
         path   => [ $web, $topic, $attachment ],
@@ -1741,12 +1746,12 @@ Performs a $fh->close() on a write handle. 0 return for no error.
 
 sub close_write {
     my ( $this, $fh ) = @_;
-    
+
     # meyer@modell-aachen
     # In case _initSession() failes we should return a non-zero value.
     # (see description above: Apache/WebDAV.pm relays on this)
     return POSIX::EACCES unless $this->_initSession();
-    
+
     $fh->close();
     my $rec = $this->{_filehandles}->{$fh};
     my $result;
@@ -2084,6 +2089,6 @@ support from the authors (available from webdav@c-dot.co.uk). By working
 with us you not only gain direct access to the support of some of the
 most experienced Foswiki developers working on the project, but you are
 also helping to make the further development of open-source Foswiki
-possible. 
+possible.
 
 Author: Crawford Currie http://c-dot.co.uk

@@ -4,7 +4,7 @@ package Foswiki::Plugins::FilesysVirtualPlugin;
 use strict;
 
 our $VERSION = '1.6.7';
-our $RELEASE = '1.6.7';
+our $RELEASE = '1.6.8';
 our $SHORTDESCRIPTION =
   'Implementation of the Filesys::Virtual protocol over a Foswiki store';
 
@@ -90,7 +90,7 @@ support from the authors (available from webdav@c-dot.co.uk). By working
 with us you not only gain direct access to the support of some of the
 most experienced Foswiki developers working on the project, but you are
 also helping to make the further development of open-source Foswiki
-possible. 
+possible.
 
 Author: Crawford Currie http://c-dot.co.uk
 

@@ -51,6 +51,7 @@ sub new {
     $this->{db} = {
         locktokens => {},
         tree       => { locks => [], subnodes => {} },
+        auth       => {}
     };
     return $this;
 }
@@ -85,6 +86,45 @@ sub _unlock {
     flock( $this->{handle}, Fcntl::LOCK_UN ) || die "Failed to LOCK_UN: $!";
     close( $this->{handle} ) || die "Failed to close: $!";
     undef $this->{handle};
+}
+
+sub getAuthToken {
+    my ( $this, $token ) = @_;
+    my $auth = $this->{db}->{auth}->{$token};
+    if ( $auth ) {
+        my $now = scalar( time() );
+        return $auth if ( $auth->{expires} gt $now );
+        $this->removeAuthToken( $token );
+    }
+
+    return undef;
+}
+
+sub setAuthToken {
+    my ( $this, $token, $data ) = @_;
+
+    my $retval = 0;
+    $this->_lock();
+    eval {
+        if ( $data->{user} && $data->{path} && $data->{file} ) {
+            $data->{expires} = scalar( time() ) + 7200;
+            $this->{db}->{auth}->{$token} = $data;
+            $retval = 1;
+        }
+    };
+
+    $this->_unlock();
+    return $retval;
+}
+
+sub removeAuthToken {
+    my ( $this, $token ) = @_;
+
+    $this->_lock();
+    eval {
+        delete $this->{db}->{auth}->{$token};
+    };
+    $this->_unlock();
 }
 
 # Get the lock with the given token
@@ -250,6 +290,6 @@ support from the authors (available from webdav@c-dot.co.uk). By working
 with us you not only gain direct access to the support of some of the
 most experienced Foswiki developers working on the project, but you are
 also helping to make the further development of open-source Foswiki
-possible. 
+possible.
 
 Author: Crawford Currie http://c-dot.co.uk

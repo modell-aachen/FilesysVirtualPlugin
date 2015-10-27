@@ -139,6 +139,7 @@ sub DESTROY {
 sub _locks {
     my $this = shift;
     unless ( $this->{locks} ) {
+        $this->_initSession unless $this->{session};
         my $lockdb =
           Foswiki::Func::getWorkArea('FilesysVirtualPlugin') . '/lockdb';
         $this->{locks} = new Filesys::Virtual::Locks($lockdb);
@@ -186,7 +187,7 @@ sub _initSession {
             $Foswiki::cfg{PubDir} = $vconfig->{PubDir};
             $Foswiki::cfg{WorkingDir} = $vconfig->{WorkingDir};
             $Foswiki::cfg{DataDir} = $vconfig->{DataDir};
-	}
+        }
     };
     if ( $@ ) {
         # nothing...

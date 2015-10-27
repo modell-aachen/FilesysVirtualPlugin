@@ -178,6 +178,7 @@ sub _initSession {
             $Foswiki::cfg{PubDir} = $vconfig->{PubDir};
             $Foswiki::cfg{WorkingDir} = $vconfig->{WorkingDir};
             $Foswiki::cfg{DataDir} = $vconfig->{DataDir};
+	}
     };
     if ( $@ ) {
         # nothing...

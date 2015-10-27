@@ -156,6 +156,14 @@ sub _initSession {
 
     return $this->{session} if defined $this->{session};
 
+    # Initialize a new session
+    $this->{session} = new Foswiki( undef, undef, { dav => 1 } );
+    if ( !$this->{session} || !$Foswiki::Plugins::SESSION ) {
+        print STDERR "Failed to initialise Filesys::Virtual session; "
+          . " is the user authenticated?";
+        return 0;
+    }
+
     # meyer@modell-aachen.de
     # Add support for virtual hosting.
     # See package VirtualHostingContrib for further details.

@@ -156,64 +156,31 @@ sub _initSession {
 
     return $this->{session} if defined $this->{session};
 
-		# meyer@modell-aachen.de
-		# Possible fix for wrong/missing web and topic name
-		# Part 1
-		my $newPathInfo = undef;
-		eval {
-				require Foswiki::Request;
-				my $request = new Foswiki::Request;
-				my $pathInfo = $request->path_info();
-				my $davLocation = $Foswiki::cfg{Plugins}{WebDAVLinkPlugin}{Location};
-				if ( $pathInfo =~ /$davLocation\/(.+)\/(.+)_files/) {
-						$newPathInfo = "/$1/$2";
-				}
-		};
-		if ( $@ ) {
-				# ignore...
-		}
-
-    # Initialise the session, if required
-		$this->{session} = new Foswiki( undef, undef, { dav => 1 } );
-    if ( !$this->{session} || !$Foswiki::Plugins::SESSION ) {
-        print STDERR "Failed to initialise Filesys::Virtual session; "
-          . " is the user authenticated?";
-        return 0;
-    }
-
-		# meyer@modell-aachen.de
-		# Possible fix for wrong/missing web and topic name
-		# Part 2
-		if ( $newPathInfo ) {
-				$this->{session}->{request}->pathInfo( $newPathInfo );
-		}
-
     # meyer@modell-aachen.de
     # Add support for virtual hosting.
     # See package VirtualHostingContrib for further details.
     eval {
-				my $request = $this->{session}->{request};
-				my $host = $request->virtual_host();
-				my $port = $request->virtual_port();
+        my $request = $this->{session}->{request};
+        my $host = $request->virtual_host();
+        my $port = $request->virtual_port();
 
-				require Foswiki::Contrib::VirtualHostingContrib::VirtualHost;
-				my $vhost = Foswiki::Contrib::VirtualHostingContrib::VirtualHost->find( $host, $port );
-				my $vconfig = $vhost->run( sub {
-						my $config = {
-								PubDir			=> $Foswiki::cfg{PubDir},
-								WorkingDir	=> $Foswiki::cfg{WorkingDir},
-								DataDir			=> $Foswiki::cfg{DataDir},
-						};
+        if (scalar %{Foswiki::Contrib::VirtualHostingContrib::VirtualHost::}) {
+            require Foswiki::Contrib::VirtualHostingContrib::VirtualHost;
+            my $vhost = Foswiki::Contrib::VirtualHostingContrib::VirtualHost->find($host, $port);
+            my $vconfig = $vhost->run(sub {
+                return {
+                    PubDir => $Foswiki::cfg{PubDir},
+                    WorkingDir => $Foswiki::cfg{WorkingDir},
+                    DataDir => $Foswiki::cfg{DataDir}
+                };
+            });
 
-						return $config;
-				} );
-
-				$Foswiki::cfg{PubDir} = $vconfig->{PubDir};
-				$Foswiki::cfg{WorkingDir} = $vconfig->{WorkingDir};
-				$Foswiki::cfg{DataDir} = $vconfig->{DataDir};
+            $Foswiki::cfg{PubDir} = $vconfig->{PubDir};
+            $Foswiki::cfg{WorkingDir} = $vconfig->{WorkingDir};
+            $Foswiki::cfg{DataDir} = $vconfig->{DataDir};
     };
     if ( $@ ) {
-				# nothing...
+        # nothing...
     }
 
     return $this->{session};

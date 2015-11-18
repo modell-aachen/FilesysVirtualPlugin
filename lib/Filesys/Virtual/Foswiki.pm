@@ -198,6 +198,7 @@ sub _initSession {
 
 # Convert one or more strings from perl logical characters to the site encoding
 sub _logical2site {
+    return @_ if $Foswiki::UNICODE;
     return
       map { Encode::encode( $Foswiki::cfg{Site}{CharSet} || 'iso-8859-1', $_ ) }
       @_;
@@ -205,6 +206,7 @@ sub _logical2site {
 
 # Convert one or more strings from perl logical characters to the site encoding
 sub _site2logical {
+    return @_ if $Foswiki::UNICODE;
     return
       map { Encode::decode( $Foswiki::cfg{Site}{CharSet} || 'iso-8859-1', $_ ) }
       @_;
@@ -1075,7 +1077,7 @@ sub _R_list {
     my ( $this, $web ) = @_;
     my @list = grep { !/\// } Foswiki::Func::getListOfWebs('user,public');
     @list = map { Encode::decode( $Foswiki::cfg{Site}{CharSet}, $_ ) } @list
-      if defined $Foswiki::cfg{Site}{CharSet};
+      if defined $Foswiki::cfg{Site}{CharSet} && !$Foswiki::UNICODE;
     unshift( @list, '.' );
     return \@list;
 }
@@ -1110,7 +1112,7 @@ sub _W_list {
     push( @list, '.' );
     push( @list, '..' );
     @list = map { Encode::decode( $Foswiki::cfg{Site}{CharSet}, $_ ) } @list
-      if defined $Foswiki::cfg{Site}{CharSet};
+      if defined $Foswiki::cfg{Site}{CharSet} && !$Foswiki::UNICODE;
     return \@list;
 }
 
@@ -1395,6 +1397,7 @@ sub _A_test {
     # SMELL: violating Store encapsulation
     # lpSbctugkTBzsMAC
     my $file = "$Foswiki::cfg{PubDir}/$web/$topic/$attachment";
+    $file = Foswiki::encode_utf8($file) if $Foswiki::UNICODE;
     return eval "-$type $file";
 }
 
@@ -1441,6 +1444,8 @@ sub _D_test {
     # All other ops, kick down to the filesystem
     # SMELL: violating Store encapsulation
     # lpSbctugkTBzsMAC
+    $web = Foswiki::encode_utf8($web) if $Foswiki::UNICODE;
+    $topic = Foswiki::encode_utf8($topic) if $Foswiki::UNICODE;
     return eval "-$type $Foswiki::cfg{PubDir}/$web/$topic";
 }
 
@@ -1480,6 +1485,8 @@ sub _T_test {
     # All other ops, kick down to the filesystem
     # SMELL: violating Store encapsulation
     # lpSbctugkTBzsMAC
+    $web = Foswiki::encode_utf8($web) if $Foswiki::UNICODE;
+    $topic = Foswiki::encode_utf8($topic) if $Foswiki::UNICODE;
     return eval "-$type $Foswiki::cfg{DataDir}/$web/$topic.txt";
 }
 
@@ -1515,6 +1522,7 @@ sub _W_test {
     # SMELL: violating Store encapsulation
     # lpSbctugkTBzsMAC
     my $file = "$Foswiki::cfg{DataDir}/$web";
+    $file = Foswiki::encode_utf8($file) if $Foswiki::UNICODE;
     return eval "-$type $file";
 }
 

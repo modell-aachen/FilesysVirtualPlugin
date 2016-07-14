@@ -1639,10 +1639,11 @@ sub _A_closeHandle {
     # we return here and let WebDAVContrib know to send a HTTP_BAD_REQUEST response.
     return 1 unless $fileSize;
 
+    my ( $web, $topic, $attachment );
     eval {
 
         #WORKAROUND to retain attachment comment
-        my ( $web, $topic, $attachment ) = @{ $rec->{path} };
+        ( $web, $topic, $attachment ) = @{ $rec->{path} };
         my ( $meta, $text ) = Foswiki::Func::readTopic( $web, $topic );
         my $args = $meta->get( 'FILEATTACHMENT', $attachment );
         my $comment = $args->{comment} || '';
@@ -1674,6 +1675,12 @@ sub _A_closeHandle {
         print STDERR $result;
         return EACCES;
     }
+
+    if ($Foswiki::cfg{Plugins}{NotifyAffectedPlugin}{Enabled}) {
+        require Foswiki::Plugins::NotifyAffectedPlugin;
+        Foswiki::Plugins::NotifyAffectedPlugin::notifyTopicChange($web, $topic);
+    }
+
     return 0;
 }
 
